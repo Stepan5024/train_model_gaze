@@ -46,8 +46,14 @@ def filter_persons_by_idx(file_names: List[str], keep_person_idxs: List[int]) ->
 
     for idx, file_name in enumerate(file_names):
 
+        logger.info(f"file_name {file_name}")
+        person_id = file_name.split('\\')[0]   #from pperle file_name p14\day03\0013 
+        # from real life p15/day02/2024_05_06_17_33_30
+        # from generate file_id p15/day02/2024_05_06_23_32_43
+        if len(file_name.split('\\') == 0):
+            person_id = file_name.split('/')[0]
         
-        person_id = file_name.split('\\')[0]  
+        logger.info(f"person_id {person_id}")
         unique_person_ids.add(person_id)
         #logger.info(f"Processing file {idx}: {file_name} with extracted person ID: {person_id}")
 

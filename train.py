@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 import os
 import pathlib
 import sys
+import time
 from typing import Tuple
 from torchinfo import summary
 
@@ -27,6 +28,9 @@ class Model(FinalModel):
         self.adjust_slope = adjust_slope
         self.grid_calibration_samples = grid_calibration_samples
         self.model = model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"Set learning on {self.device} torch.cuda.is_available() {torch.cuda.is_available()}")
+        self.to(self.device)
         self.optimizer = Adam(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
     def configure_optimizers(self):
@@ -35,6 +39,10 @@ class Model(FinalModel):
 
     def train_step(self, batch):
         logger.info("Training step started.")
+        for k, v in batch.items():
+            logger.info(f"Key: {k}, Type: {type(v)}")
+
+        #batch = {k: v.to(device=self.model.device) if torch.is_tensor(v) else v for k, v in batch.items()}
         self.train()
         self.optimizer.zero_grad()
         logger.info("Optimizer gradients reset.")
@@ -66,20 +74,20 @@ class Model(FinalModel):
     def process_batch(self, batch):
         logger.info("Processing batch...")
 
-        person_idx = batch['person_idx'].long()
+        person_idx = batch['person_idx'].to(self.device).long()
         logger.info(f"Person indices: {person_idx}")
-        left_eye_image = batch['left_eye_image'].float()
-        right_eye_image = batch['right_eye_image'].float()
-        full_face_image = batch['full_face_image'].float()
+        left_eye_image = batch['left_eye_image'].to(self.device).float()
+        right_eye_image = batch['right_eye_image'].to(self.device).float()
+        full_face_image = batch['full_face_image'].to(self.device).float()
         #logger.info(f"Batch size for images: {left_eye_image.size(0)}")
 
-        gaze_pitch = batch['gaze_pitch'].float()
-        gaze_yaw = batch['gaze_yaw'].float()
+        gaze_pitch = batch['gaze_pitch'].to(self.device).float()
+        gaze_yaw = batch['gaze_yaw'].to(self.device).float()
         labels = torch.stack([gaze_pitch, gaze_yaw]).T
         #logger.info("Labels prepared.")
 
         outputs = self(person_idx, full_face_image, right_eye_image, left_eye_image)
-        logger.info(f"outputs model {outputs}")
+        logger.info(f"Outputs model {outputs[:10]}")
         logger.info(f"Outputs generated: Shape {outputs.shape}")
 
         loss = F.mse_loss(outputs, labels)
@@ -108,10 +116,10 @@ class Model(FinalModel):
         channels = 3
     
     
-        dummy_person_idx = torch.tensor([0])  # Assuming `person_idx` expects integer indexes.
-        dummy_full_face = torch.randn(batch_size, channels, 96, 96)
-        dummy_right_eye = torch.randn(batch_size, channels, 64, 96)
-        dummy_left_eye = torch.randn(batch_size, channels, 64, 96)
+        dummy_person_idx = torch.tensor([0], device=self.device)  # Assuming `person_idx` expects integer indexes.
+        dummy_full_face = torch.randn(batch_size, channels, 96, 96, device=self.device)
+        dummy_right_eye = torch.randn(batch_size, channels, 64, 96, device=self.device)
+        dummy_left_eye = torch.randn(batch_size, channels, 64, 96, device=self.device)
         dummy_inputs = (dummy_person_idx, dummy_full_face, dummy_right_eye, dummy_left_eye)
         logger.info(f"Prepared dummy inputs for ONNX export with batch size {batch_size}.")
 
@@ -163,23 +171,40 @@ class Model(FinalModel):
         """
 
     def train_model(self, train_loader, valid_loader, num_epochs=1):
+        total_start_time = time.time()
         logger.info(f"Starting training for {num_epochs} epochs...")
+        total_batches = len(train_loader) * num_epochs
         best_valid_loss = float('inf')
         best_epoch = 0
 
         for epoch in range(num_epochs):
+            epoch_start_time = time.time()
             train_losses, train_errors = [], []
             valid_losses, valid_errors = [], []
             batch_count_train = 0
             logger.info(f"Epoch {epoch+1}/{num_epochs} training start.")
+            batch_times = []
+            
 
-            for batch in train_loader:
+            for i, batch in enumerate(train_loader):
+                logger.info(f"Processing batch {i+1} of {len(train_loader)}")
+                batch_start_time = time.time()
                 batch_count_train += 1
                 loss, error = self.train_step(batch)
                 train_losses.append(loss)
                 train_errors.append(error)
+                batch_duration = time.time() - batch_start_time
+                batch_times.append(batch_duration)
+
                 if batch_count_train % 10 == 0:  # Adjust this modulo check to control verbosity
                     logger.info(f"  Training batch {batch_count_train}: Loss = {loss:.4f}, Error = {error:.4f}")
+                if len(batch_times) > 1:
+                    average_batch_time = sum(batch_times) / len(batch_times)
+                    remaining_batches = total_batches - (epoch * len(train_loader) + batch_count_train)
+                    estimated_time_remaining = average_batch_time * remaining_batches
+                    logger.info(f"Estimated time remaining: {estimated_time_remaining / 60:.2f} minutes")
+            
+
             logger.info(f"Completed training {batch_count_train} batches.")
 
             batch_count_valid = 0
@@ -212,6 +237,10 @@ class Model(FinalModel):
                 best_valid_loss = epoch_valid_loss
                 best_epoch = epoch
                 self.save_model(save_path, best_epoch, is_best=True)
+            epoch_duration = time.time() - epoch_start_time
+            average_loss = sum(train_losses) / len(train_losses)
+            average_error = sum(train_errors) / len(train_errors)
+            logger.info(f"End of epoch {epoch+1}: Average Loss = {average_loss:.4f}, Average Error = {average_error:.4f}, Epoch Duration = {epoch_duration:.2f} seconds")
 
         logger.info("Training completed.")
 
@@ -220,13 +249,16 @@ class Model(FinalModel):
 def main(path_to_data: str, validate_on_person: int, test_on_person: int, learning_rate: float, weight_decay: float, batch_size: int, k: int, adjust_slope: bool, grid_calibration_samples: bool):
     global model
     model = Model(learning_rate, weight_decay, k, adjust_slope, grid_calibration_samples)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    logger.info(f"Set learning torch.cuda.is_available() {torch.cuda.is_available()}")
     batch_size_dummy = 1
     channels = 3
 
-    dummy_person_idx = torch.tensor([0])  # Assuming `person_idx` expects integer indexes.
-    dummy_full_face = torch.randn(batch_size_dummy, channels, 96, 96)
-    dummy_right_eye = torch.randn(batch_size_dummy, channels, 64, 96)
-    dummy_left_eye = torch.randn(batch_size_dummy, channels, 64, 96)
+    dummy_person_idx = torch.tensor([0], device=device)  # Assuming `person_idx` expects integer indexes.
+    dummy_full_face = torch.randn(batch_size_dummy, channels, 96, 96, device=device)
+    dummy_right_eye = torch.randn(batch_size_dummy, channels, 64, 96, device=device)
+    dummy_left_eye = torch.randn(batch_size_dummy, channels, 64, 96, device=device)
     
     summary(model, input_data=(dummy_person_idx, dummy_full_face, dummy_right_eye, dummy_left_eye))
 
