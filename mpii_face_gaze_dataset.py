@@ -30,14 +30,24 @@ def resource_path(relative_path) -> str:
     
         return os.path.join(base_path, relative_path)
 
-last_person_id = 15
+last_person_id = 16
 rev_path =  os.path.join("logs", "training", "gaze")
 abs_path = pathlib.Path(resource_path(rev_path))
 logger = create_logger("TrainGaze", abs_path, 'train_gaze_log.txt')
 
 
+def extract_person_id(file_name: str) -> str:
+    # Check which separator is present in the file name
+    if '\\' in file_name:
+        separator = '\\'
+    else:
+        separator = '/'
 
-def filter_persons_by_idx(file_names: List[str], keep_person_idxs: List[int]) -> List[int]:
+    # Split the string using the determined separator and get the first part
+    person_id = file_name.split(separator)[0]
+    return person_id
+
+def filter_persons_by_idx(file_names: List[str], keep_person_idxs: List[int], debug: bool = False) -> List[int]:
 
     keep_person_set = set(f'p{idx:02}' for idx in keep_person_idxs)  # creates a set like {'p02', 'p03', ...}
     logger.info(f"Initialized keep_person_set with IDs: {keep_person_set}")
@@ -46,20 +56,22 @@ def filter_persons_by_idx(file_names: List[str], keep_person_idxs: List[int]) ->
 
     for idx, file_name in enumerate(file_names):
 
-        logger.info(f"file_name {file_name}")
-        person_id = file_name.split('\\')[0]   #from pperle file_name p14\day03\0013 
+        #if debug:
+        #    logger.info(f"file_name {file_name}")
+        person_id = extract_person_id(file_name)   #from pperle file_name p14\day03\0013 
         # from real life p15/day02/2024_05_06_17_33_30
         # from generate file_id p15/day02/2024_05_06_23_32_43
-        if len(file_name.split('\\') == 0):
-            person_id = file_name.split('/')[0]
         
-        logger.info(f"person_id {person_id}")
+        #if debug:
+        #    logger.info(f"person_id {person_id}")
         unique_person_ids.add(person_id)
-        #logger.info(f"Processing file {idx}: {file_name} with extracted person ID: {person_id}")
+        #if debug:
+        #    logger.info(f"Processing file {idx}: {file_name} with extracted person ID: {person_id}")
 
         if person_id in keep_person_set:
             valid_indices.append(idx)
-            #logger.info(f"Adding index {idx} for person ID {person_id}")
+            #if debug:
+            #    logger.info(f"Adding index {idx} for person ID {person_id}")
 
     logger.info(f"Requested Person IDs Set: {keep_person_set}")
     logger.info(f"Unique Person IDs Found: {unique_person_ids}")
@@ -70,7 +82,7 @@ def filter_persons_by_idx(file_names: List[str], keep_person_idxs: List[int]) ->
     return valid_indices, sorted(unique_person_ids)
 
 
-def remove_error_data(data_path: str, file_names: List[str]) -> List[int]:
+def remove_error_data(data_path: str, file_names: List[str], debug = False) -> List[int]:
     """
     Remove erroneous data, where the gaze point is not in the screen.
 
@@ -86,9 +98,11 @@ def remove_error_data(data_path: str, file_names: List[str]) -> List[int]:
 
     file_names = [file_name[:-4] for file_name in file_names]
     for idx, file_name in enumerate(file_names):
-        #logger.info(f"Processing file {idx}: {file_name}")
+        #if debug:
+        #    logger.info(f"Processing file {idx}: {file_name}")
         if file_name not in error_file_names:
-            #logger.info(f"File {file_name} is valid. Adding index {idx}.")
+            #if debug:
+            #    logger.info(f"File {file_name} is valid. Adding index {idx}.")
             valid_idxs.append(idx)
     logger.info(f"Total valid indices collected: {len(valid_idxs)}")
     return valid_idxs
@@ -155,46 +169,61 @@ class MPIIFaceGaze(Dataset):
     def open_hdf5(self):
         self.h5_file = h5py.File(self.hdf5_file_name, 'r')
 
-    def __getitem__(self, idx):
-        #logger.info(f"Original index received: {idx}")
+    def __getitem__(self, idx, debug:bool = True):
+        #if debug:
+        #    logger.info(f"Original index received: {idx}")
 
         if torch.is_tensor(idx):
 
             idx = idx.tolist()
-            #logger.info(f"Index converted from tensor to list: {idx}")
+            #if debug:
+            #    logger.info(f"Index converted from tensor to list: {idx}")
 
         if self.h5_file is None:
-            #logger.info("Opening HDF5 file...")
+            #if debug:
+            #    logger.info("Opening HDF5 file...")
             self.open_hdf5()
 
         augmented_person = idx >= len(self.idx2ValidIdx)
-        #logger.info(f"Is augmented person? {augmented_person}")
+        
+        #if debug:
+        #    logger.info(f"Is augmented person? {augmented_person}")
         if augmented_person:
             original_idx = idx
             idx -= len(self.idx2ValidIdx)  # Adjust index for augmented data
-            #logger.info(f"Index adjusted for augmentation from {original_idx} to {idx}")
+            #if debug:
+            #    logger.info(f"Index adjusted for augmentation from {original_idx} to {idx}")
 
         idx = self.idx2ValidIdx[idx]
-        #logger.info(f"Valid index used for data retrieval: {idx}")
+        if debug:
+            logger.info(f"Valid index used for data retrieval: {idx}")
 
         file_name = self.h5_file['file_name_base'][idx].decode('utf-8')
         gaze_location = self.h5_file['gaze_location'][idx]
         screen_size = self.h5_file['screen_size'][idx]
-        #logger.info(f"Data retrieved for file: {file_name}")
-        person_idx = int(file_name.split('\\')[-3][1:])
+        if debug:
+            logger.info(f"Data retrieved for file: {file_name}")
 
+        #  ошибка 
+        #person_idx = int(file_name.split('\\')[-3][1:])
+        st = extract_person_id(file_name) # pxx
+        last_two_chars = st[-2:] #xx
+        person_idx = int(last_two_chars) #int(xx)
         left_eye_image = skimage.io.imread(f"{self.data_path}/{file_name}-left_eye.png")
         left_eye_image = np.flip(left_eye_image, axis=1)
         right_eye_image = skimage.io.imread(f"{self.data_path}/{file_name}-right_eye.png")
         full_face_image = skimage.io.imread(f"{self.data_path}/{file_name}-full_face.png")
-        #logger.info("Images loaded and initial flipping applied.")
+        #if debug:
+        #    logger.info("Images loaded and initial flipping applied.")
 
         gaze_pitch = np.array(self.h5_file['gaze_pitch'][idx])
         gaze_yaw = np.array(self.h5_file['gaze_yaw'][idx])
-        #logger.info("Gaze data loaded.")
+        #if debug:
+        #    logger.info("Gaze data loaded.")
 
         if augmented_person or self.force_flip:
-            #logger.info("Applying additional flipping for augmentation...")
+            #if debug:
+            #    logger.info("Applying additional flipping for augmentation...")
             person_idx += last_person_id  # fix person_idx
             left_eye_image = np.flip(left_eye_image, axis=1)
             right_eye_image = np.flip(right_eye_image, axis=1)
@@ -202,11 +231,13 @@ class MPIIFaceGaze(Dataset):
             gaze_yaw *= -1 # Invert yaw for flipped images
 
         if self.transform:
-            #logger.info("Applying transformations...")
+            #if debug:
+            #    logger.info("Applying transformations...")
             left_eye_image = self.transform(image=left_eye_image)["image"]
             right_eye_image = self.transform(image=right_eye_image)["image"]
             full_face_image = self.transform(image=full_face_image)["image"]
-        #logger.info("Data prepared for return.")
+        #if debug:
+        #    logger.info("Data prepared for return.")
         return {    
             'file_name': file_name,
             'gaze_location': gaze_location,

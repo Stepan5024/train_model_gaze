@@ -6,3 +6,5 @@ albumentations
 h5py
 termcolor
 pandas
+onnx
+onnxruntime

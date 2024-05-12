@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torchvision.models import VGG16_Weights
 
 
+last_person_id = 16
 
 class SELayer(nn.Module):
     """
@@ -35,7 +36,7 @@ class FinalModel(nn.Module):
     def __init__(self):
         super(FinalModel, self).__init__()
 
-        self.subject_biases = nn.Parameter(torch.zeros(15 * 2, 2))  # pitch and yaw offset for the original and mirrored participant
+        self.subject_biases = nn.Parameter(torch.zeros(last_person_id * 2, 2))  # pitch and yaw offset for the original and mirrored participant
         vgg_weights = VGG16_Weights.DEFAULT
         self.cnn_face = nn.Sequential(
             models.vgg16(weights=vgg_weights).features[:9],  # first four convolutional layers of VGG16 pretrained on ImageNet

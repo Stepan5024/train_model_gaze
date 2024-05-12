@@ -48,7 +48,8 @@ def calc_angle_error(labels: torch.Tensor, outputs: torch.Tensor) -> torch.Tenso
     angles = torch.clip(angles, -1.0, 1.0)  # fix NaN values for 1.0 < angles < -1.0
 
     rad = torch.arccos(angles)
-    return torch.rad2deg(rad).mean()
+    mean_deg = torch.rad2deg(rad).mean()
+    return mean_deg.cpu()
 
 
 def plot_prediction_vs_ground_truth(labels, outputs, axis: PitchYaw):

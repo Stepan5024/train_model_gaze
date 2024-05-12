@@ -17,7 +17,8 @@ from model import FinalModel
 from utils import calc_angle_error
 
 logger = None
-model = None
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 
 class Model(FinalModel):
     def __init__(self, learning_rate: float = 0.001, weight_decay: float = 0., k=None, adjust_slope: bool = False, grid_calibration_samples: bool = False, *args, **kwargs):
@@ -27,7 +28,7 @@ class Model(FinalModel):
         self.k = [9, 128] if k is None else k
         self.adjust_slope = adjust_slope
         self.grid_calibration_samples = grid_calibration_samples
-        self.model = model
+        self.model = FinalModel()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Set learning on {self.device} torch.cuda.is_available() {torch.cuda.is_available()}")
         self.to(self.device)
@@ -65,31 +66,43 @@ class Model(FinalModel):
             logger.info("Starting batch processing for evaluation...")
             loss, labels, outputs = self.process_batch(batch)
             logger.info(f"Batch processed - Loss computed: {loss.item():.4f}")
-        angle_error = calc_angle_error(labels, outputs)
+            loss_cpu = loss.item()
+            logger.info(f"Batch processed - Loss computed: {loss_cpu:.4f}")
+        angle_error = calc_angle_error(labels.cpu(), outputs.cpu())
         logger.info(f"Angle error calculated: {angle_error:.4f}")
         
         return loss.item(), angle_error, labels, outputs
     
 
-    def process_batch(self, batch):
+    def process_batch(self, batch, debug: bool = False):
         logger.info("Processing batch...")
 
         person_idx = batch['person_idx'].to(self.device).long()
+        logger.info(f"Person indices len = {len(person_idx)}")
         logger.info(f"Person indices: {person_idx}")
         left_eye_image = batch['left_eye_image'].to(self.device).float()
         right_eye_image = batch['right_eye_image'].to(self.device).float()
         full_face_image = batch['full_face_image'].to(self.device).float()
-        #logger.info(f"Batch size for images: {left_eye_image.size(0)}")
+        
+        #if debug:
+        #    logger.info(f"Batch size for images: {left_eye_image.size(0)}")
 
         gaze_pitch = batch['gaze_pitch'].to(self.device).float()
         gaze_yaw = batch['gaze_yaw'].to(self.device).float()
         labels = torch.stack([gaze_pitch, gaze_yaw]).T
-        #logger.info("Labels prepared.")
+        #if debug:
+        #    logger.info("Labels prepared.")
 
         outputs = self(person_idx, full_face_image, right_eye_image, left_eye_image)
-        logger.info(f"Outputs model {outputs[:10]}")
-        logger.info(f"Outputs generated: Shape {outputs.shape}")
+        
+        #if debug:
+        #    logger.info(f"Outputs model {outputs[:10]}")
+        #else:
+        
 
+        logger.info(f"Outputs generated: Shape {outputs.shape}")
+        logger.info(f"Outputs model {outputs[:2]}")
+        
         loss = F.mse_loss(outputs, labels)
         logger.info(f"Computed loss: {loss.item():.4f}")
         return loss, labels, outputs
@@ -97,14 +110,15 @@ class Model(FinalModel):
     def save_model(self, path, epoch, is_best=False):
         logger.info(f"Saving model state at epoch {epoch}...")
         # Save in PyTorch and checkpoint formats
-        pth_file_path = os.path.join(path, f"model_epoch_{epoch}.pth")
+        pth_file_path = os.path.join(path,'saved_models', f"model_epoch_{epoch}.pth")
         torch.save(self.model.state_dict(), pth_file_path)
         logger.info(f"Model saved in PyTorch format at: {pth_file_path}")
-        ckpt_file_path = os.path.join(path, f"model_epoch_{epoch}.ckpt")
+        ckpt_file_path = os.path.join(path, 'saved_models', f"model_epoch_{epoch}.ckpt")
+        
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.model.optimizer.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
         }, ckpt_file_path)
         logger.info(f"Checkpoint saved at: {ckpt_file_path}")
 
@@ -124,51 +138,16 @@ class Model(FinalModel):
         logger.info(f"Prepared dummy inputs for ONNX export with batch size {batch_size}.")
 
         # Create dummy inputs with batch size of 1
-        """dummy_person_idx = torch.tensor([0])  # Single index for person_idx
-        dummy_full_face = torch.randn(1, 3, 96, 96)  # 1x3x96x96 input for full face
-        dummy_right_eye = torch.randn(1, 3, 64, 96)  # 1x3x64x96 input for right eye
-        dummy_left_eye = torch.randn(1, 3, 64, 96)  # 1x3x64x96 input for left eye
-        
-        """
+
         # Export model to ONNX format
-        onnx_file_path = os.path.join(path, f"model_epoch_{epoch}.onnx")
+        onnx_file_path = os.path.join(path,'saved_models', f"model_epoch_{epoch}.onnx")
         torch.onnx.export(self.model, dummy_inputs, onnx_file_path, export_params=True)
         logger.info(f"Model exported in ONNX format at: {onnx_file_path}")
         if is_best:
-            best_model_path = os.path.join(path, "best_model.pth")
+            best_model_path = os.path.join(path, 'saved_models', "best_model.pth")
             torch.save(self.model.state_dict(), best_model_path)
             logger.info(f"Best model saved separately at: {best_model_path}")
 
-    """
-    def save_model(self, path, epoch, is_best=False):
-        # Save in PyTorch format
-        torch.save(self.model.state_dict(), os.path.join(path, f"model_epoch_{epoch}.pth"))
-
-        # Save in checkpoint format if there's specific state to maintain
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.model.optimizer.state_dict(),
-        }, os.path.join(path, f"model_epoch_{epoch}.ckpt"))
-
-        # Save in ONNX format (Ensure the model is in evaluation mode and dummy input is correct)
-        self.model.eval()
-        
-        batch_size = 1
-        channels = 3
-
-
-        dummy_person_idx = torch.tensor([0])  # Assuming `person_idx` expects integer indexes.
-        dummy_full_face = torch.randn(batch_size, channels, 96, 96)
-        dummy_right_eye = torch.randn(batch_size, channels, 64, 96)
-        dummy_left_eye = torch.randn(batch_size, channels, 64, 96)
-        dummy_inputs = (dummy_person_idx, dummy_full_face, dummy_right_eye, dummy_left_eye)
-
-        torch.onnx.export(self.model, dummy_inputs, os.path.join(path, f"model_epoch_{epoch}.onnx"), export_params=True)
-
-        if is_best:
-            torch.save(self.model.state_dict(), os.path.join(path, "best_model.pth"))
-        """
 
     def train_model(self, train_loader, valid_loader, num_epochs=1):
         total_start_time = time.time()
@@ -185,14 +164,18 @@ class Model(FinalModel):
             logger.info(f"Epoch {epoch+1}/{num_epochs} training start.")
             batch_times = []
             
+            total_batches = len(train_loader)
+            half_batches = total_batches // 20
 
             for i, batch in enumerate(train_loader):
+                if i >= half_batches:
+                    break
                 logger.info(f"Processing batch {i+1} of {len(train_loader)}")
                 batch_start_time = time.time()
                 batch_count_train += 1
                 loss, error = self.train_step(batch)
                 train_losses.append(loss)
-                train_errors.append(error)
+                train_errors.append(error.item())
                 batch_duration = time.time() - batch_start_time
                 batch_times.append(batch_duration)
 
@@ -208,9 +191,17 @@ class Model(FinalModel):
             logger.info(f"Completed training {batch_count_train} batches.")
 
             batch_count_valid = 0
+            total_valid_batches = len(valid_loader)
+            half_batches = total_valid_batches // 1
+
             for batch in valid_loader:
+                if i >= half_batches:
+                    break
                 batch_count_valid += 1
                 loss, error, _, _ = self.eval_step(batch)
+                error = error.cpu().item()
+                
+                #loss = loss.cpu().item()
                 valid_losses.append(loss)
                 valid_errors.append(error)
                 if batch_count_valid % 10 == 0:  # Adjust this modulo check to control verbosity
@@ -241,7 +232,8 @@ class Model(FinalModel):
             average_loss = sum(train_losses) / len(train_losses)
             average_error = sum(train_errors) / len(train_errors)
             logger.info(f"End of epoch {epoch+1}: Average Loss = {average_loss:.4f}, Average Error = {average_error:.4f}, Epoch Duration = {epoch_duration:.2f} seconds")
-
+        total_duration = time.time() - total_start_time
+        logger.info(f"Total training time: {total_duration / 60:.2f} minutes")
         logger.info("Training completed.")
 
 
@@ -285,12 +277,12 @@ def initLogger():
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument("--path_to_data", type=str, default=r'F:\EyeGazeDataset\MPIIFaceGaze_post_proccessed_stepa_pperle')
-    parser.add_argument("--validate_on_person", type=int, default=1)
+    parser.add_argument("--path_to_data", type=str, default=r'F:\EyeGazeDataset\gaze_user')
+    parser.add_argument("--validate_on_person", type=int, default=15)
     parser.add_argument("--test_on_person", type=int, default=0)
-    parser.add_argument("--learning_rate", type=float, default=0.1)
+    parser.add_argument("--learning_rate", type=float, default=0.8)
     parser.add_argument("--weight_decay", type=float, default=0.)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--k", type=int, default=[9, 128], nargs='+')
     parser.add_argument("--adjust_slope", type=bool, default=False)
     parser.add_argument("--grid_calibration_samples", type=bool, default=False)
